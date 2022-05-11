@@ -1,5 +1,6 @@
 import { createMemoryHistory, InitialEntry, parsePath } from "../history";
 import type { HydrationState, LoaderFunction, NavigateOptions } from "../index";
+import type { Router } from "../router";
 import {
   createRouter,
   Fetcher,
@@ -143,7 +144,8 @@ function isRedirect(result: any) {
   );
 }
 
-let cleanupCurrentRouter: (() => void) | null = null;
+// Router created by setup() - used for automatic cleanup
+let currentRouter: Router | null = null;
 // A set of to-be-garbage-collected Deferred's to clean up at the end of a test
 let gcDfds = new Set<Deferred>();
 
@@ -255,12 +257,11 @@ function setup({
   let enhancedRoutes = enhanceRoutes(routes);
   jest.spyOn(history, "push");
   jest.spyOn(history, "replace");
-  let router = createRouter({
+  currentRouter = createRouter({
     history,
     routes: enhancedRoutes,
     hydrationData,
-  });
-  cleanupCurrentRouter = router.initialize();
+  }).initialize();
 
   function getRouteHelpers(
     routeId: string,
@@ -427,6 +428,7 @@ function setup({
   ): FetcherHelpers {
     let matches = matchRoutes(enhancedRoutes, href);
     invariant(matches, `No matches found for fetcher href:${href}`);
+    invariant(currentRouter, "No currentRouter available");
     let search = parsePath(href).search || "";
     let hasNakedIndexQuery = new URLSearchParams(search)
       .getAll("index")
@@ -442,13 +444,13 @@ function setup({
     let activeLoaderMatches = [match];
     // @ts-expect-error
     if (opts?.formMethod === "post") {
-      if (router.state.navigation?.location) {
+      if (currentRouter.state.navigation?.location) {
         activeLoaderMatches = matchRoutes(
           enhancedRoutes,
-          router.state.navigation.location
+          currentRouter.state.navigation.location
         ) as RouteMatch<string, EnhancedRouteObject>[];
       } else {
-        activeLoaderMatches = router.state.matches as RouteMatch<
+        activeLoaderMatches = currentRouter.state.matches as RouteMatch<
           string,
           EnhancedRouteObject
         >[];
@@ -483,7 +485,8 @@ function setup({
       key,
       navigationId,
       get fetcher() {
-        return router.getFetcher(key);
+        invariant(currentRouter, "No currentRouter available");
+        return currentRouter.getFetcher(key);
       },
       loaders: loaderHelpers,
       actions: actionHelpers,
@@ -505,6 +508,8 @@ function setup({
     let navigationId = ++guid;
     let helpers: NavigationHelpers;
 
+    invariant(currentRouter, "No currentRouter available");
+
     // @ts-expect-error
     if (opts?.formMethod === "post") {
       activeActionType = "navigation";
@@ -521,7 +526,8 @@ function setup({
 
     if (typeof href === "number") {
       let promise = new Promise<void>((r) => {
-        let unsubscribe = router.subscribe(() => {
+        invariant(currentRouter, "No currentRouter available");
+        let unsubscribe = currentRouter.subscribe(() => {
           helpers = getNavigationHelpers(
             history.createHref(history.location),
             navigationId
@@ -530,14 +536,14 @@ function setup({
           r();
         });
       });
-      router.navigate(href).catch(handleUncaughtError);
+      currentRouter.navigate(href).catch(handleUncaughtError);
       await promise;
       //@ts-ignore
       return helpers;
     }
 
     helpers = getNavigationHelpers(href, navigationId);
-    router.navigate(href, opts).catch(handleUncaughtError);
+    currentRouter.navigate(href, opts).catch(handleUncaughtError);
     return helpers;
   }
 
@@ -562,6 +568,7 @@ function setup({
     let navigationId = ++guid;
     let key = typeof keyOrOpts === "string" ? keyOrOpts : String(navigationId);
     opts = typeof keyOrOpts === "object" ? keyOrOpts : opts;
+    invariant(currentRouter, "No currentRouter available");
 
     // @ts-expect-error
     if (opts?.formMethod === "post") {
@@ -573,30 +580,33 @@ function setup({
     }
 
     let helpers = getFetcherHelpers(key, href, navigationId, opts);
-    router.fetch(key, href, opts).catch(handleUncaughtError);
+    currentRouter.fetch(key, href, opts).catch(handleUncaughtError);
     return helpers;
   }
 
   // Simulate a revalidation, returning a series of helpers to manually
   // control/assert loader/actions
   async function revalidate(): Promise<NavigationHelpers> {
+    invariant(currentRouter, "No currentRouter available");
     // if a revalidation interrupts an action submission, we don't actually
     // start a new new navigation so don't increment here
     let navigationId =
-      router.state.navigation.type === "actionSubmission" ? guid : ++guid;
+      currentRouter.state.navigation.type === "actionSubmission"
+        ? guid
+        : ++guid;
     activeLoaderType = "navigation";
     activeLoaderNavigationId = navigationId;
-    let href = router.createHref(
-      router.state.navigation.location || router.state.location
+    let href = currentRouter.createHref(
+      currentRouter.state.navigation.location || currentRouter.state.location
     );
     let helpers = getNavigationHelpers(href, navigationId);
-    router.revalidate().catch(handleUncaughtError);
+    currentRouter.revalidate().catch(handleUncaughtError);
     return helpers;
   }
 
   return {
     history,
-    router,
+    router: currentRouter,
     navigate,
     fetch,
     revalidate,
@@ -726,10 +736,8 @@ beforeEach(() => {
 // Detect any failures inside the router navigate code
 afterEach(() => {
   // Cleanup any routers created using setup()
-  if (cleanupCurrentRouter) {
-    cleanupCurrentRouter();
-    cleanupCurrentRouter = null;
-  }
+  currentRouter?.dispose();
+  currentRouter = null;
 
   // Reject any lingering deferreds and remove
   for (let dfd of gcDfds.values()) {
@@ -1206,7 +1214,7 @@ describe("a router", () => {
           },
         ],
       });
-      let cleanup = router.initialize();
+      router.initialize();
 
       // Initial load - no existing data, should always call loader
       await new Promise((r) => setImmediate(r));
@@ -1251,7 +1259,7 @@ describe("a router", () => {
       expect(rootLoader.mock.calls.length).toBe(1);
       rootLoader.mockClear();
 
-      cleanup();
+      router.dispose();
     });
 
     it("delegates to the route if it should reload or not", async () => {
@@ -1290,7 +1298,7 @@ describe("a router", () => {
           },
         ],
       });
-      let cleanup = router.initialize();
+      router.initialize();
 
       // Initial load - no existing data, should always call loader and should
       // not give use ability to opt-out
@@ -1337,7 +1345,7 @@ describe("a router", () => {
       });
       expect(rootLoader.mock.calls.length).toBe(0);
 
-      cleanup();
+      router.dispose();
     });
 
     it("provides the default implementation to the route function", async () => {
@@ -1384,7 +1392,7 @@ describe("a router", () => {
           },
         ],
       });
-      let cleanup = router.initialize();
+      router.initialize();
 
       // Initial load - no existing data, should always call loader
       await new Promise((r) => setImmediate(r));
@@ -1429,7 +1437,7 @@ describe("a router", () => {
       expect(rootLoader.mock.calls.length).toBe(1);
       rootLoader.mockClear();
 
-      cleanup();
+      router.dispose();
     });
 
     it("applies to fetcher loads", async () => {
@@ -1464,7 +1472,7 @@ describe("a router", () => {
           },
         ],
       });
-      let cleanup = router.initialize();
+      router.initialize();
       await new Promise((r) => setImmediate(r));
 
       let key = "key";
@@ -1507,7 +1515,7 @@ describe("a router", () => {
         defaultShouldRevalidate: true,
       });
 
-      cleanup();
+      router.dispose();
     });
   });
 
@@ -2796,7 +2804,7 @@ describe("a router", () => {
           },
         ],
       });
-      let cleanup = router.initialize();
+      router.initialize();
 
       expect(console.warn).not.toHaveBeenCalled();
       expect(parentSpy.mock.calls.length).toBe(1);
@@ -2840,7 +2848,7 @@ describe("a router", () => {
         },
       });
 
-      cleanup();
+      router.dispose();
     });
 
     it("kicks off initial data load if partial hydration data is provided", async () => {
@@ -2868,7 +2876,7 @@ describe("a router", () => {
           },
         },
       });
-      let cleanup = router.initialize();
+      router.initialize();
 
       expect(console.warn).toHaveBeenCalledWith(
         "The provided hydration data did not find loaderData for all matched " +
@@ -2901,7 +2909,7 @@ describe("a router", () => {
         },
       });
 
-      cleanup();
+      router.dispose();
     });
 
     it("does not kick off initial data load due to partial hydration if errors exist", async () => {
@@ -2932,7 +2940,7 @@ describe("a router", () => {
           },
         },
       });
-      let cleanup = router.initialize();
+      router.initialize();
 
       expect(console.warn).not.toHaveBeenCalled();
       expect(parentSpy).not.toHaveBeenCalled();
@@ -2950,7 +2958,7 @@ describe("a router", () => {
         },
       });
 
-      cleanup();
+      router.dispose();
     });
 
     it("handles interruptions of initial data load", async () => {
@@ -2979,7 +2987,7 @@ describe("a router", () => {
           },
         ],
       });
-      let cleanup = router.initialize();
+      router.initialize();
 
       expect(console.warn).not.toHaveBeenCalled();
       expect(parentSpy.mock.calls.length).toBe(1);
@@ -3038,7 +3046,7 @@ describe("a router", () => {
         },
       });
 
-      cleanup();
+      router.dispose();
     });
 
     it("handles errors in initial data load", async () => {
@@ -3057,7 +3065,7 @@ describe("a router", () => {
           },
         ],
       });
-      let cleanup = router.initialize();
+      router.initialize();
 
       await new Promise((r) => setImmediate(r));
       expect(router.state).toMatchObject({
@@ -3073,7 +3081,7 @@ describe("a router", () => {
         },
       });
 
-      cleanup();
+      router.dispose();
     });
 
     it("executes loaders on push navigations", async () => {
@@ -4646,7 +4654,7 @@ describe("a router", () => {
     });
   });
 
-  describe("router.cleanup", () => {
+  describe("router.dispose", () => {
     it("should cancel pending navigations", async () => {
       let t = setup({
         routes: TASK_ROUTES,
@@ -4662,7 +4670,7 @@ describe("a router", () => {
       let A = await t.navigate("/tasks");
       expect(t.router.state.navigation.state).toBe("loading");
 
-      cleanupCurrentRouter && cleanupCurrentRouter();
+      currentRouter?.dispose();
       expect(A.loaders.tasks.signal.aborted).toBe(true);
     });
 
@@ -4681,7 +4689,7 @@ describe("a router", () => {
       let A = await t.fetch("/tasks");
       let B = await t.fetch("/tasks");
 
-      cleanupCurrentRouter && cleanupCurrentRouter();
+      currentRouter?.dispose();
       expect(A.loaders.tasks.signal.aborted).toBe(true);
       expect(B.loaders.tasks.signal.aborted).toBe(true);
     });

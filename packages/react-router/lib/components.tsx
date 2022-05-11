@@ -20,6 +20,7 @@ import {
   stripBasename,
   warning,
 } from "@remix-run/router";
+import { useSyncExternalStore as useSyncExternalStoreShim } from "use-sync-external-store/shim";
 
 import {
   LocationContext,
@@ -40,49 +41,42 @@ let IS_REACT_18 =
   "useSyncExternalStore" in React &&
   window.location.search.indexOf("17") === -1;
 
+// Module-scoped singleton to hold the router.  Extracted from the React lifecycle
+// to avoid issues w.r.t. dual initialization fetches in concurrent rendering.
+// Data router apps are expected to have a static route tree and are not intended
+// to be unmounted/remounted at runtime.
+let routerSingleton: DataRouter;
+
+/**
+ * Unit-testing-only function to reset the router between tests
+ * @private
+ */
+export function _resetModuleScope() {
+  // @ts-expect-error
+  routerSingleton = null;
+}
+
 export function useRenderDataRouter({
   children,
   fallbackElement,
-  // FIXME: Figure out if we want to use a direct prop or support useRoutes()
-  todo_bikeshed_routes,
   createRouter,
 }: {
   children?: React.ReactNode;
   fallbackElement?: React.ReactElement;
-  todo_bikeshed_routes?: RouteObject[];
   createRouter: (routes: RouteObject[]) => DataRouter;
 }): React.ReactElement {
-  let routes = todo_bikeshed_routes || createRoutesFromChildren(children);
-
-  // Create a router "singleton".  This will run twice in StrictMode so it's
-  // important that createRouter() has no side effects.  All side effects must
-  // happen via router.initialize() and be cleaned up appropriately
-  let routerRef = React.useRef<DataRouter | null>(null);
-  if (routerRef.current === null) {
-    routerRef.current = createRouter(routes);
+  if (!routerSingleton) {
+    routerSingleton = createRouter(
+      createRoutesFromChildren(children)
+    ).initialize();
   }
-  let router = routerRef.current;
+  let router = routerSingleton;
 
   // Sync router state to our component state to force re-renders
-  /* eslint-disable react-hooks/rules-of-hooks */
-  let state: RouterState;
-  if (IS_REACT_18) {
-    let method = "useSyncExternalStore";
-    // @ts-expect-error Need to access in this absurd way so webpack/TS doesn't
-    // yell during a react@17 build when this isn't on the React object
-    state = React[method](router.subscribe, () => router.state);
-  } else {
-    let stateTuple = React.useState<DataRouter["state"]>(() => router.state);
-    state = stateTuple[0];
-    let setState = stateTuple[1];
-    React.useEffect(() => router.subscribe(setState), [router, setState]);
-  }
-  /* eslint-enable react-hooks/rules-of-hooks */
-
-  // Register event/history listeners and kick off initial data loads.  Note
-  // that in StrictMode this will kick off initial data loads, abort them, and
-  // re-kick them off due to double-rendering
-  React.useEffect(() => router.initialize(), [router]);
+  let state: RouterState = useSyncExternalStoreShim(
+    router.subscribe,
+    () => router.state
+  );
 
   let navigator = React.useMemo((): Navigator => {
     return {
@@ -105,11 +99,7 @@ export function useRenderDataRouter({
           navigationType={state.historyAction}
           navigator={navigator}
         >
-          {todo_bikeshed_routes ? (
-            <DataRoutes routes={routes} />
-          ) : (
-            <Routes children={children} />
-          )}
+          <Routes children={children} />
         </Router>
       </DataRouterStateContext.Provider>
     </DataRouterContext.Provider>
@@ -179,7 +169,6 @@ export interface DataMemoryRouterProps {
   initialIndex?: number;
   hydrationData?: HydrationState;
   fallbackElement?: React.ReactElement;
-  todo_bikeshed_routes?: RouteObject[];
 }
 
 export function DataMemoryRouter({
@@ -188,12 +177,10 @@ export function DataMemoryRouter({
   initialIndex,
   hydrationData,
   fallbackElement,
-  todo_bikeshed_routes,
 }: DataMemoryRouterProps): React.ReactElement {
   return useRenderDataRouter({
     children,
     fallbackElement,
-    todo_bikeshed_routes,
     createRouter: (routes) =>
       createMemoryRouter({
         initialEntries,
@@ -453,16 +440,6 @@ export function Routes({
   location,
 }: RoutesProps): React.ReactElement | null {
   return useRoutes(createRoutesFromChildren(children), location);
-}
-
-interface DataRoutesProps {
-  routes: RouteObject[];
-}
-
-// Internal wrapper to render routes provided to a DataRouter via props instead
-// of children.  This is primarily to avoid re-calling createRoutesFromChildren
-function DataRoutes({ routes }: DataRoutesProps): React.ReactElement | null {
-  return useRoutes(routes);
 }
 
 ///////////////////////////////////////////////////////////////////////////////

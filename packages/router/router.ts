@@ -42,7 +42,7 @@ export interface Router {
    * initial data fetches.  Returns a function to cleanup listeners and abort
    * any in-progress loads
    */
-  initialize(): () => void;
+  initialize(): Router;
 
   /**
    * Subscribe to router.state updates
@@ -109,6 +109,11 @@ export interface Router {
    * @param key
    */
   deleteFetcher(key?: string): void;
+
+  /**
+   * Cleanup listeners and abort any in-progress loads
+   */
+  dispose(): void;
 
   /**
    * Internal fetch AbortControllers accessed by unit tests
@@ -505,6 +510,8 @@ export function createRouter(init: RouterInit): Router {
   );
 
   let dataRoutes = convertRoutesToDataRoutes(init.routes);
+  // Cleanup function for history
+  let unlistenHistory: (() => void) | null = null;
   // Externally-provided function to call on all state changes
   let subscriber: RouterSubscriber | null = null;
   // Externally-provided object to hold scroll restoration locations during routing
@@ -540,6 +547,7 @@ export function createRouter(init: RouterInit): Router {
     );
   }
 
+  let router: Router;
   let state: RouterState = {
     historyAction: init.history.action,
     location: init.history.location,
@@ -590,7 +598,7 @@ export function createRouter(init: RouterInit): Router {
   function initialize() {
     // If history informs us of a POP navigation, start the navigation but do not update
     // state.  We'll update our own state once the navigation completes
-    let unlistenHistory = init.history.listen(
+    unlistenHistory = init.history.listen(
       ({ action: historyAction, location }) =>
         startNavigation(historyAction, location)
     );
@@ -600,14 +608,18 @@ export function createRouter(init: RouterInit): Router {
       startNavigation(HistoryAction.Pop, state.location);
     }
 
-    return () => {
+    return router;
+  }
+
+  function dispose() {
+    if (unlistenHistory) {
       unlistenHistory();
-      subscriber = null;
-      pendingNavigationController?.abort();
-      for (let [, controller] of fetchControllers) {
-        controller.abort();
-      }
-    };
+    }
+    subscriber = null;
+    pendingNavigationController?.abort();
+    for (let [, controller] of fetchControllers) {
+      controller.abort();
+    }
   }
 
   function subscribe(fn: RouterSubscriber) {
@@ -1517,7 +1529,7 @@ export function createRouter(init: RouterInit): Router {
     return null;
   }
 
-  let router: Router = {
+  router = {
     get state() {
       return state;
     },
@@ -1530,6 +1542,7 @@ export function createRouter(init: RouterInit): Router {
     createHref,
     getFetcher,
     deleteFetcher,
+    dispose,
     _internalFetchControllers: fetchControllers,
   };
 
