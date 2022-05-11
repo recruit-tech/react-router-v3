@@ -7,6 +7,7 @@ import type {
   RouteMatch,
   RouteObject,
   Router as DataRouter,
+  RouterState,
   To,
 } from "@remix-run/router";
 import {
@@ -35,6 +36,10 @@ import {
   _renderMatches,
 } from "./hooks";
 
+let IS_REACT_18 =
+  "useSyncExternalStore" in React &&
+  window.location.search.indexOf("17") === -1;
+
 export function useRenderDataRouter({
   children,
   fallbackElement,
@@ -48,29 +53,36 @@ export function useRenderDataRouter({
   createRouter: (routes: RouteObject[]) => DataRouter;
 }): React.ReactElement {
   let routes = todo_bikeshed_routes || createRoutesFromChildren(children);
-  let [router] = React.useState<DataRouter>(() => createRouter(routes));
 
-  // TODO: For React 18 we can move to useSyncExternalStore via feature detection
-  // state = React.useSyncExternalStore(router.subscribe, () => router.state);
+  // Create a router "singleton".  This will run twice in StrictMode so it's
+  // important that createRouter() has no side effects.  All side effects must
+  // happen via router.initialize() and be cleaned up appropriately
+  let routerRef = React.useRef<DataRouter | null>(null);
+  if (routerRef.current === null) {
+    routerRef.current = createRouter(routes);
+  }
+  let router = routerRef.current;
 
-  let [state, setState] = React.useState<DataRouter["state"]>(
-    () => router.state
-  );
-  React.useEffect(() => {
-    let unsubscribe = router.subscribe((newState) => setState(newState));
+  // Sync router state to our component state to force re-renders
+  /* eslint-disable react-hooks/rules-of-hooks */
+  let state: RouterState;
+  if (IS_REACT_18) {
+    let method = "useSyncExternalStore";
+    // @ts-expect-error Need to access in this absurd way so webpack/TS doesn't
+    // yell during a react@17 build when this isn't on the React object
+    state = React[method](router.subscribe, () => router.state);
+  } else {
+    let stateTuple = React.useState<DataRouter["state"]>(() => router.state);
+    state = stateTuple[0];
+    let setState = stateTuple[1];
+    React.useEffect(() => router.subscribe(setState), [router, setState]);
+  }
+  /* eslint-enable react-hooks/rules-of-hooks */
 
-    // If we have loaders to run for an initial data load, and all of those loaders
-    // are synchronous, then they'll actually trigger completeNavigation _before_
-    // we get here, so we'll never call setState.  Capture that scenario here
-    if (!state.initialized && router.state.initialized) {
-      setState(router.state);
-    }
-
-    return () => {
-      unsubscribe();
-      router.cleanup();
-    };
-  }, [router, state.initialized]);
+  // Register event/history listeners and kick off initial data loads.  Note
+  // that in StrictMode this will kick off initial data loads, abort them, and
+  // re-kick them off due to double-rendering
+  React.useEffect(() => router.initialize(), [router]);
 
   let navigator = React.useMemo((): Navigator => {
     return {

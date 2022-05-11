@@ -143,6 +143,10 @@ function isRedirect(result: any) {
   );
 }
 
+let cleanupCurrentRouter: (() => void) | null = null;
+// A set of to-be-garbage-collected Deferred's to clean up at the end of a test
+let gcDfds = new Set<Deferred>();
+
 type SetupOpts = {
   routes: TestRouteObject[];
   initialEntries?: InitialEntry[];
@@ -173,8 +177,6 @@ function setup({
   let activeActionNavigationId = guid;
   let activeLoaderFetchId = guid;
   let activeActionFetchId = guid;
-  // A set of to-be-garbage-collected Deferred's to clean up at the end of a test
-  let gcDfds = new Set<Deferred>();
 
   // Enhance routes with loaders/actions as requested that will call the
   // active navigation loader/action
@@ -258,6 +260,7 @@ function setup({
     routes: enhancedRoutes,
     hydrationData,
   });
+  cleanupCurrentRouter = router.initialize();
 
   function getRouteHelpers(
     routeId: string,
@@ -597,9 +600,6 @@ function setup({
     navigate,
     fetch,
     revalidate,
-    cleanup() {
-      gcDfds.forEach((dfd) => dfd.resolve());
-    },
   };
 }
 
@@ -725,6 +725,18 @@ beforeEach(() => {
 
 // Detect any failures inside the router navigate code
 afterEach(() => {
+  // Cleanup any routers created using setup()
+  if (cleanupCurrentRouter) {
+    cleanupCurrentRouter();
+    cleanupCurrentRouter = null;
+  }
+
+  // Reject any lingering deferreds and remove
+  for (let dfd of gcDfds.values()) {
+    dfd.reject();
+    gcDfds.delete(dfd);
+  }
+
   // @ts-ignore
   console.warn.mockReset();
   if (uncaughtErrors.length) {
@@ -1194,6 +1206,7 @@ describe("a router", () => {
           },
         ],
       });
+      let cleanup = router.initialize();
 
       // Initial load - no existing data, should always call loader
       await new Promise((r) => setImmediate(r));
@@ -1237,6 +1250,8 @@ describe("a router", () => {
       await router.navigate("/cookie");
       expect(rootLoader.mock.calls.length).toBe(1);
       rootLoader.mockClear();
+
+      cleanup();
     });
 
     it("delegates to the route if it should reload or not", async () => {
@@ -1275,6 +1290,7 @@ describe("a router", () => {
           },
         ],
       });
+      let cleanup = router.initialize();
 
       // Initial load - no existing data, should always call loader and should
       // not give use ability to opt-out
@@ -1320,6 +1336,8 @@ describe("a router", () => {
         formData: createFormData({}),
       });
       expect(rootLoader.mock.calls.length).toBe(0);
+
+      cleanup();
     });
 
     it("provides the default implementation to the route function", async () => {
@@ -1366,6 +1384,7 @@ describe("a router", () => {
           },
         ],
       });
+      let cleanup = router.initialize();
 
       // Initial load - no existing data, should always call loader
       await new Promise((r) => setImmediate(r));
@@ -1409,6 +1428,8 @@ describe("a router", () => {
       await router.navigate("/cookie");
       expect(rootLoader.mock.calls.length).toBe(1);
       rootLoader.mockClear();
+
+      cleanup();
     });
 
     it("applies to fetcher loads", async () => {
@@ -1443,6 +1464,7 @@ describe("a router", () => {
           },
         ],
       });
+      let cleanup = router.initialize();
       await new Promise((r) => setImmediate(r));
 
       let key = "key";
@@ -1484,6 +1506,8 @@ describe("a router", () => {
         formMethod: "post",
         defaultShouldRevalidate: true,
       });
+
+      cleanup();
     });
   });
 
@@ -2703,8 +2727,6 @@ describe("a router", () => {
         state: null,
         key: expect.any(String),
       });
-
-      t.cleanup();
     });
 
     it("handles 404 routes", () => {
@@ -2774,6 +2796,7 @@ describe("a router", () => {
           },
         ],
       });
+      let cleanup = router.initialize();
 
       expect(console.warn).not.toHaveBeenCalled();
       expect(parentSpy.mock.calls.length).toBe(1);
@@ -2816,6 +2839,8 @@ describe("a router", () => {
           "0-0": "CHILD DATA",
         },
       });
+
+      cleanup();
     });
 
     it("kicks off initial data load if partial hydration data is provided", async () => {
@@ -2843,6 +2868,7 @@ describe("a router", () => {
           },
         },
       });
+      let cleanup = router.initialize();
 
       expect(console.warn).toHaveBeenCalledWith(
         "The provided hydration data did not find loaderData for all matched " +
@@ -2874,6 +2900,8 @@ describe("a router", () => {
           "0-0": "CHILD DATA",
         },
       });
+
+      cleanup();
     });
 
     it("does not kick off initial data load due to partial hydration if errors exist", async () => {
@@ -2904,6 +2932,7 @@ describe("a router", () => {
           },
         },
       });
+      let cleanup = router.initialize();
 
       expect(console.warn).not.toHaveBeenCalled();
       expect(parentSpy).not.toHaveBeenCalled();
@@ -2920,6 +2949,8 @@ describe("a router", () => {
           "0-0": "CHILD_DATA",
         },
       });
+
+      cleanup();
     });
 
     it("handles interruptions of initial data load", async () => {
@@ -2948,6 +2979,7 @@ describe("a router", () => {
           },
         ],
       });
+      let cleanup = router.initialize();
 
       expect(console.warn).not.toHaveBeenCalled();
       expect(parentSpy.mock.calls.length).toBe(1);
@@ -3005,6 +3037,8 @@ describe("a router", () => {
           "0-1": "CHILD2 DATA",
         },
       });
+
+      cleanup();
     });
 
     it("handles errors in initial data load", async () => {
@@ -3023,6 +3057,7 @@ describe("a router", () => {
           },
         ],
       });
+      let cleanup = router.initialize();
 
       await new Promise((r) => setImmediate(r));
       expect(router.state).toMatchObject({
@@ -3037,6 +3072,8 @@ describe("a router", () => {
           "0": "Kaboom!",
         },
       });
+
+      cleanup();
     });
 
     it("executes loaders on push navigations", async () => {
@@ -3102,8 +3139,6 @@ describe("a router", () => {
       });
       expect(t.history.action).toEqual("PUSH");
       expect(t.history.location.pathname).toEqual("/tasks/1");
-
-      t.cleanup();
     });
 
     it("executes loaders on replace navigations", async () => {
@@ -3153,8 +3188,6 @@ describe("a router", () => {
       });
       expect(t.history.action).toEqual("REPLACE");
       expect(t.history.location.pathname).toEqual("/tasks");
-
-      t.cleanup();
     });
 
     it("executes loaders on go navigations", async () => {
@@ -3206,8 +3239,6 @@ describe("a router", () => {
       });
       expect(t.history.action).toEqual("POP");
       expect(t.history.location.pathname).toEqual("/tasks");
-
-      t.cleanup();
     });
 
     it("persists location keys throughout navigations", async () => {
@@ -3238,8 +3269,6 @@ describe("a router", () => {
       // history isn't creating a new one in history.push
       expect(t.router.state.location.key).toBe(navigationKey);
       expect(t.history.location.key).toBe(navigationKey);
-
-      t.cleanup();
     });
 
     it("sends proper arguments to loaders", async () => {
@@ -3273,8 +3302,6 @@ describe("a router", () => {
         request: new Request("http://localhost/tasks?foo=bar"),
         signal: expect.any(AbortSignal),
       });
-
-      t.cleanup();
     });
 
     it("handles errors thrown from loaders", async () => {
@@ -3310,8 +3337,6 @@ describe("a router", () => {
       expect(t.router.state.errors).toEqual({
         root: "INDEX_ERROR",
       });
-
-      t.cleanup();
     });
 
     it("re-runs loaders on post-error navigations", async () => {
@@ -3342,8 +3367,6 @@ describe("a router", () => {
         tasks: "TASKS_DATA",
       });
       expect(t.router.state.errors).toBe(null);
-
-      t.cleanup();
     });
 
     it("handles interruptions during navigations", async () => {
@@ -3407,7 +3430,6 @@ describe("a router", () => {
           null,
         ],
       ]);
-      t.cleanup();
     });
 
     it("handles redirects thrown from loaders", async () => {
@@ -3482,8 +3504,6 @@ describe("a router", () => {
       });
       expect(t.history.action).toEqual("REPLACE");
       expect(t.history.location.pathname).toEqual("/tasks/1");
-
-      t.cleanup();
     });
 
     it("handles redirects returned from loaders", async () => {
@@ -3558,8 +3578,6 @@ describe("a router", () => {
       });
       expect(t.history.action).toEqual("REPLACE");
       expect(t.history.location.pathname).toEqual("/tasks/1");
-
-      t.cleanup();
     });
 
     it("handles thrown non-redirect Responses as normal errors", async () => {
@@ -3588,8 +3606,6 @@ describe("a router", () => {
           tasks: response,
         },
       });
-
-      t.cleanup();
     });
 
     it("sends proper arguments to actions", async () => {
@@ -3622,8 +3638,6 @@ describe("a router", () => {
         "application/x-www-form-urlencoded"
       );
       expect((await request.formData()).get("query")).toBe("params");
-
-      t.cleanup();
     });
 
     it("sends proper arguments to actions (using query string)", async () => {
@@ -3657,8 +3671,6 @@ describe("a router", () => {
         "application/x-www-form-urlencoded"
       );
       expect((await request.formData()).get("query")).toBe("params");
-
-      t.cleanup();
     });
   });
 
@@ -3703,8 +3715,6 @@ describe("a router", () => {
       await nav3.loaders.tasks.resolve("TASKS");
       expect(t.router.state.restoreScrollPosition).toBe(200);
       expect(t.router.state.resetScrollPosition).toBe(true);
-
-      t.cleanup();
     });
 
     it("restores scroll using custom key", async () => {
@@ -3734,8 +3744,6 @@ describe("a router", () => {
       await nav1.loaders.tasks.resolve("TASKS");
       expect(t.router.state.restoreScrollPosition).toBe(100);
       expect(t.router.state.resetScrollPosition).toBe(true);
-
-      t.cleanup();
     });
 
     it("does not restore scroll on submissions", async () => {
@@ -3770,8 +3778,6 @@ describe("a router", () => {
       await nav1.loaders.tasks.resolve("TASKS");
       expect(t.router.state.restoreScrollPosition).toBe(false);
       expect(t.router.state.resetScrollPosition).toBe(true);
-
-      t.cleanup();
     });
 
     it("does not reset scroll", async () => {
@@ -3801,8 +3807,6 @@ describe("a router", () => {
       await nav1.loaders.tasks.resolve("TASKS");
       expect(t.router.state.restoreScrollPosition).toBe(null);
       expect(t.router.state.resetScrollPosition).toBe(false);
-
-      t.cleanup();
     });
   });
 
@@ -3847,8 +3851,6 @@ describe("a router", () => {
       expect(t.router.state.location.key).toBe(key);
       expect(t.history.push).not.toHaveBeenCalled();
       expect(t.history.replace).not.toHaveBeenCalled();
-
-      t.cleanup();
     });
 
     it("handles uninterrupted revalidation in an idle state (from PUSH)", async () => {
@@ -3908,8 +3910,6 @@ describe("a router", () => {
       // @ts-ignore
       expect(t.history.push.mock.calls.length).toBe(1);
       expect(t.history.replace).not.toHaveBeenCalled();
-
-      t.cleanup();
     });
 
     it("handles revalidation interrupted by a <Link> navigation", async () => {
@@ -3988,8 +3988,6 @@ describe("a router", () => {
         t.router.state.location,
         t.router.state.location.state
       );
-
-      t.cleanup();
     });
 
     it("handles revalidation interrupted by a <Form method=get> navigation", async () => {
@@ -4052,8 +4050,6 @@ describe("a router", () => {
         t.router.state.location,
         t.router.state.location.state
       );
-
-      t.cleanup();
     });
 
     it("handles revalidation interrupted by a <Form method=post> navigation", async () => {
@@ -4138,8 +4134,6 @@ describe("a router", () => {
         t.router.state.location,
         t.router.state.location.state
       );
-
-      t.cleanup();
     });
 
     it("handles <Link> navigation interrupted by a revalidation", async () => {
@@ -4199,8 +4193,6 @@ describe("a router", () => {
         t.router.state.location,
         t.router.state.location.state
       );
-
-      t.cleanup();
     });
 
     it("handles <Form method=get> navigation interrupted by a revalidation", async () => {
@@ -4265,8 +4257,6 @@ describe("a router", () => {
         t.router.state.location,
         t.router.state.location.state
       );
-
-      t.cleanup();
     });
 
     it("handles <Form method=post> navigation interrupted by a revalidation during action phase", async () => {
@@ -4351,8 +4341,6 @@ describe("a router", () => {
       expect(N.loaders.tasks.stub.mock.calls.length).toBe(0);
       expect(R.loaders.root.stub.mock.calls.length).toBe(1);
       expect(R.loaders.tasks.stub.mock.calls.length).toBe(1);
-
-      t.cleanup();
     });
 
     it("handles <Form method=post> navigation interrupted by a revalidation during loading phase", async () => {
@@ -4441,8 +4429,6 @@ describe("a router", () => {
       expect(N.loaders.tasks.stub.mock.calls.length).toBe(1);
       expect(R.loaders.root.stub.mock.calls.length).toBe(1);
       expect(R.loaders.tasks.stub.mock.calls.length).toBe(1);
-
-      t.cleanup();
     });
 
     it("handles redirects returned from revalidations", async () => {
@@ -4500,8 +4486,6 @@ describe("a router", () => {
         },
       });
       expect(t.router.state.location.key).not.toBe(key);
-
-      t.cleanup();
     });
 
     it("handles errors from revalidations", async () => {
@@ -4545,8 +4529,6 @@ describe("a router", () => {
         },
       });
       expect(t.router.state.location.key).toBe(key);
-
-      t.cleanup();
     });
 
     it("leverages shouldRevalidate on revalidation routes", async () => {
@@ -4630,8 +4612,6 @@ describe("a router", () => {
           index: "INDEX_DATA**",
         },
       });
-
-      t.cleanup();
     });
 
     it("triggers revalidation on opted-in fetchers", async () => {
@@ -4663,8 +4643,6 @@ describe("a router", () => {
         type: "done",
         data: "ROOT_DATA**",
       });
-
-      t.cleanup();
     });
   });
 
@@ -4684,7 +4662,7 @@ describe("a router", () => {
       let A = await t.navigate("/tasks");
       expect(t.router.state.navigation.state).toBe("loading");
 
-      t.router.cleanup();
+      cleanupCurrentRouter && cleanupCurrentRouter();
       expect(A.loaders.tasks.signal.aborted).toBe(true);
     });
 
@@ -4703,7 +4681,7 @@ describe("a router", () => {
       let A = await t.fetch("/tasks");
       let B = await t.fetch("/tasks");
 
-      t.router.cleanup();
+      cleanupCurrentRouter && cleanupCurrentRouter();
       expect(A.loaders.tasks.signal.aborted).toBe(true);
       expect(B.loaders.tasks.signal.aborted).toBe(true);
     });
@@ -4711,7 +4689,6 @@ describe("a router", () => {
 
   describe("fetchers", () => {
     describe("fetcher states", () => {
-      // TODO: Remove once confident in below tests
       it("unabstracted loader fetch", async () => {
         let dfd = defer();
         let router = createRouter({

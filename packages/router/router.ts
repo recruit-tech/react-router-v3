@@ -32,21 +32,88 @@ export interface DataRouteMatch extends RouteMatch<string, DataRouteObject> {}
  * A Router instance manages all navigation and data loading/mutations
  */
 export interface Router {
+  /**
+   * Return the current state of the router
+   */
   get state(): RouterState;
+
+  /**
+   * Initialize the router, including adding history listeners and kicking off
+   * initial data fetches.  Returns a function to cleanup listeners and abort
+   * any in-progress loads
+   */
+  initialize(): () => void;
+
+  /**
+   * Subscribe to router.state updates
+   *
+   * @param fn function to call with the new state
+   */
   subscribe(fn: RouterSubscriber): () => void;
+
+  /**
+   * Enable scroll restoration behavior in the router
+   *
+   * @param savedScrollPositions Object that will manage positions, in case
+   *                             it's being restored from sessionStorage
+   * @param getScrollPosition    Function to get the active Y scroll position
+   * @param getKey               Function to get the key to use for restoration
+   */
   enableScrollRestoration(
     savedScrollPositions: Record<string, number>,
     getScrollPosition: GetScrollPositionFunction,
     getKey?: GetScrollRestorationKeyFunction
   ): () => void;
+
+  /**
+   * Navigate forward/backward in the history stack
+   * @param path Delta to move in the history stack
+   */
   navigate(path: number): Promise<void>;
+
+  /**
+   * Navigate to the given path
+   * @param path Path to navigate to
+   * @param opts Navigation options (method, submission, etc.)
+   */
   navigate(path: To, opts?: NavigateOptions): Promise<void>;
+
+  /**
+   * Trigger a fetcher load/submission
+   *
+   * @param key Fetcher key
+   * @param href href to fetch
+   * @param opts Fetcher options, (method, submission, etc.)
+   */
   fetch(key: string, href: string, opts?: NavigateOptions): Promise<void>;
+
+  /**
+   * Trigger a revalidation of all current route loaders and fetcher loads
+   */
   revalidate(): Promise<void>;
+
+  /**
+   * Utility function to create an href for the given location
+   * @param location
+   */
   createHref(location: Location | URL): string;
+
+  /**
+   * Get/create a fetcher for the given key
+   * @param key
+   */
   getFetcher<TData = any>(key?: string): Fetcher<TData>;
+
+  /**
+   * Delete the fetcher for a given key
+   * @param key
+   */
   deleteFetcher(key?: string): void;
-  cleanup(): void;
+
+  /**
+   * Internal fetch AbortControllers accessed by unit tests
+   * @private
+   */
   _internalFetchControllers: Map<string, AbortController>;
 }
 
@@ -520,15 +587,37 @@ export function createRouter(init: RouterInit): Router {
   // Most recent href/match for fetcher.load calls for fetchers
   let fetchLoadMatches = new Map<string, [string, DataRouteMatch]>();
 
-  // If history informs us of a POP navigation, start the navigation but do not update
-  // state.  We'll update our own state once the navigation completes
-  init.history.listen(({ action: historyAction, location }) =>
-    startNavigation(historyAction, location)
-  );
+  function initialize() {
+    // If history informs us of a POP navigation, start the navigation but do not update
+    // state.  We'll update our own state once the navigation completes
+    let unlistenHistory = init.history.listen(
+      ({ action: historyAction, location }) =>
+        startNavigation(historyAction, location)
+    );
 
-  // Kick off initial data load if needed.  Use Pop to avoid modifying history
-  if (!state.initialized) {
-    startNavigation(HistoryAction.Pop, state.location);
+    // Kick off initial data load if needed.  Use Pop to avoid modifying history
+    if (!state.initialized) {
+      startNavigation(HistoryAction.Pop, state.location);
+    }
+
+    return () => {
+      unlistenHistory();
+      subscriber = null;
+      pendingNavigationController?.abort();
+      for (let [, controller] of fetchControllers) {
+        controller.abort();
+      }
+    };
+  }
+
+  function subscribe(fn: RouterSubscriber) {
+    if (subscriber) {
+      throw new Error("A router only accepts one active subscriber");
+    }
+    subscriber = fn;
+    return () => {
+      subscriber = null;
+    };
   }
 
   // Update our state and notify the calling context of the change
@@ -1377,6 +1466,33 @@ export function createRouter(init: RouterInit): Router {
     return yeetedKeys.length > 0;
   }
 
+  function enableScrollRestoration(
+    positions: Record<string, number>,
+    getPosition: GetScrollPositionFunction,
+    getKey?: GetScrollRestorationKeyFunction
+  ) {
+    savedScrollPositions = positions;
+    getScrollPosition = getPosition;
+    getScrollRestorationKey = getKey || ((location) => location.key);
+
+    // Perform initial hydration scroll restoration, since we miss the boat on
+    // the initial updateState() because we've not yet rendered <ScrollRestoration/>
+    // and therefore have no savedScrollPositions available
+    if (!initialScrollRestored && state.navigation === IDLE_NAVIGATION) {
+      initialScrollRestored = true;
+      let y = getSavedScrollPosition(state.location, state.matches);
+      if (y != null) {
+        updateState({ restoreScrollPosition: y });
+      }
+    }
+
+    return () => {
+      savedScrollPositions = null;
+      getScrollPosition = null;
+      getScrollRestorationKey = null;
+    };
+  }
+
   function saveScrollPosition(
     location: Location,
     matches: DataRouteMatch[]
@@ -1405,44 +1521,9 @@ export function createRouter(init: RouterInit): Router {
     get state() {
       return state;
     },
-    subscribe(fn: RouterSubscriber) {
-      if (subscriber) {
-        throw new Error("A router only accepts one active subscriber");
-      }
-      subscriber = fn;
-      return () => {
-        subscriber = null;
-      };
-    },
-    enableScrollRestoration(positions, getPosition, getKey) {
-      savedScrollPositions = positions;
-      getScrollPosition = getPosition;
-      getScrollRestorationKey = getKey || ((location) => location.key);
-
-      // Perform initial hydration scroll restoration, since we miss the boat on
-      // the initial updateState() because we've not yet rendered <ScrollRestoration/>
-      // and therefore have no savedScrollPositions available
-      if (!initialScrollRestored && state.navigation === IDLE_NAVIGATION) {
-        initialScrollRestored = true;
-        let y = getSavedScrollPosition(state.location, state.matches);
-        if (y != null) {
-          updateState({ restoreScrollPosition: y });
-        }
-      }
-
-      return () => {
-        savedScrollPositions = null;
-        getScrollPosition = null;
-        getScrollRestorationKey = null;
-      };
-    },
-    cleanup() {
-      subscriber = null;
-      pendingNavigationController?.abort();
-      for (let [, controller] of fetchControllers) {
-        controller.abort();
-      }
-    },
+    initialize,
+    subscribe,
+    enableScrollRestoration,
     navigate,
     fetch,
     revalidate,
