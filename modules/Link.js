@@ -2,8 +2,7 @@ import React from 'react'
 import createReactClass from 'create-react-class'
 import { bool, object, string, func, oneOfType, shape, elementType } from 'prop-types'
 import invariant from 'invariant'
-import { routerShape } from './PropTypes'
-import { ContextSubscriber } from './ContextUtils'
+import { Context } from './RouterContext'
 
 function isLeftClickEvent(event) {
   return event.button === 0
@@ -42,12 +41,6 @@ function resolveToLocation(to, router) {
 const Link = createReactClass({
   displayName: 'Link',
 
-  mixins: [ ContextSubscriber('router') ],
-
-  contextTypes: {
-    router: routerShape
-  },
-
   propTypes: {
     to: oneOfType([ string, object, func ]),
     activeStyle: object,
@@ -69,62 +62,73 @@ const Link = createReactClass({
     }
   },
 
-  handleClick(event) {
-    if (this.props.onClick)
-      this.props.onClick(event)
+  createHandleClick(context) {
 
-    if (event.defaultPrevented)
-      return
+    return (event) => {
+      // If target prop is set (e.g. to "_blank"), let browser handle link.
+      /* istanbul ignore if: untestable with Karma */
+      if (this.props.target) {
+        return
+      }
+      if (this.props.onClick)
+        this.props.onClick(event)
 
-    const { router } = this.context
-    invariant(
-      router,
-      '<Link>s rendered outside of a router context cannot navigate.'
-    )
+      if (event.defaultPrevented)
+        return
 
-    if (isModifiedEvent(event) || !isLeftClickEvent(event))
-      return
+      const { router } = context
+      invariant(
+        router,
+        '<Link>s rendered outside of a router context cannot navigate.'
+      )
 
-    // If target prop is set (e.g. to "_blank"), let browser handle link.
-    /* istanbul ignore if: untestable with Karma */
-    if (this.props.target)
-      return
+      if (isModifiedEvent(event) || !isLeftClickEvent(event))
+        return
 
-    event.preventDefault()
 
-    router.push(resolveToLocation(this.props.to, router))
+      event.preventDefault()
+
+      router.push(resolveToLocation(this.props.to, router))
+    }
   },
 
   render() {
-    const { to, activeClassName, activeStyle, onlyActiveOnIndex, innerRef, ...props } = this.props
+    return (
+      <Context.Consumer>
+        {(context) => {
+          const { to, activeClassName, activeStyle, onlyActiveOnIndex, innerRef, ...props } = this.props
 
-    // Ignore if rendered outside the context of router to simplify unit testing.
-    const { router } = this.context
+          // Ignore if rendered outside the context of router to simplify unit testing.
+          const { router } = context
+          const handleClick = this.createHandleClick(context)
 
-    if (router) {
-      // If user does not specify a `to` prop, return an empty anchor tag.
-      if (!to) { return <a {...props} ref={innerRef} /> }
+          if (router) {
+            // If user does not specify a `to` prop, return an empty anchor tag.
+            if (!to) { return <a {...props} ref={innerRef} /> }
 
-      const toLocation = resolveToLocation(to, router)
-      props.href = router.createHref(toLocation)
+            const toLocation = resolveToLocation(to, router)
+            props.href = router.createHref(toLocation)
 
-      if (activeClassName || (activeStyle != null && !isEmptyObject(activeStyle))) {
-        if (router.isActive(toLocation, onlyActiveOnIndex)) {
-          if (activeClassName) {
-            if (props.className) {
-              props.className += ` ${activeClassName}`
-            } else {
-              props.className = activeClassName
+            if (activeClassName || (activeStyle != null && !isEmptyObject(activeStyle))) {
+              if (router.isActive(toLocation, onlyActiveOnIndex)) {
+                if (activeClassName) {
+                  if (props.className) {
+                    props.className += ` ${activeClassName}`
+                  } else {
+                    props.className = activeClassName
+                  }
+                }
+
+                if (activeStyle)
+                  props.style = { ...props.style, ...activeStyle }
+              }
             }
           }
 
-          if (activeStyle)
-            props.style = { ...props.style, ...activeStyle }
-        }
-      }
-    }
-
-    return <a {...props} onClick={this.handleClick} ref={innerRef} />
+          return <a {...props} onClick={handleClick} ref={innerRef} />
+        }}
+      </Context.Consumer>
+    )
   }
 
 })
