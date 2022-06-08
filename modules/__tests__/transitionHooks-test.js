@@ -2,7 +2,7 @@ import expect, { spyOn } from 'expect'
 import React, { Component } from 'react'
 import { render, unmountComponentAtNode } from 'react-dom'
 import createHistory from '../createMemoryHistory'
-import { routerShape } from '../PropTypes'
+import { Context } from '../RouterContext'
 import execSteps from './execSteps'
 import Router from '../Router'
 import Route from '../Route'
@@ -33,7 +33,7 @@ describe('When a router enters a branch', function () {
 
     class NewsFeed extends Component {
       UNSAFE_componentWillMount() {
-        removeNewsLeaveHook = this.context.router.setRouteLeaveHook(
+        removeNewsLeaveHook = this.props.ctx.router.setRouteLeaveHook(
           this.props.route,
           () => newsLeaveHookSpy() // Break reference equality.
         )
@@ -44,8 +44,12 @@ describe('When a router enters a branch', function () {
       }
     }
 
-    NewsFeed.contextTypes = {
-      router: routerShape.isRequired
+    const NewsFeedWithContext = ({ ...props }) => {
+      return (
+        <Context.Consumer>
+          {(context) => <NewsFeed ctx={context} {...props} />}
+        </Context.Consumer>
+      )
     }
 
     class Inbox extends Component {
@@ -62,7 +66,7 @@ describe('When a router enters a branch', function () {
 
     class User extends Component {
       UNSAFE_componentWillMount() {
-        this.context.router.setRouteLeaveHook(
+        this.props.ctx.router.setRouteLeaveHook(
           this.props.route,
           userLeaveHookSpy
         )
@@ -73,13 +77,17 @@ describe('When a router enters a branch', function () {
       }
     }
 
-    User.contextTypes = {
-      router: routerShape.isRequired
+    const UserWithContext = ({ ...props }) => {
+      return (
+        <Context.Consumer>
+          {(context) => <User ctx={context} {...props} />}
+        </Context.Consumer>
+      )
     }
 
     NewsFeedRoute = {
       path: 'news',
-      component: NewsFeed,
+      component: NewsFeedWithContext,
       onEnter(nextState, replace) {
         expect(this).toBe(NewsFeedRoute)
         expect(nextState.routes).toContain(NewsFeedRoute)
@@ -155,7 +163,7 @@ describe('When a router enters a branch', function () {
 
     UserRoute = {
       path: 'users/:userId',
-      component: User,
+      component: UserWithContext,
       childRoutes: [ AssignmentRoute ],
       onEnter() { expect(this).toBe(UserRoute) },
       onLeave() { expect(this).toBe(UserRoute) }
